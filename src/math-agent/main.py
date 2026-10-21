@@ -65,6 +65,10 @@ def solve(user_input: str) -> str:
     used_math_tool = False
 
     for round_number in range(MAX_TOOL_ROUNDS):
+        request_options = {}
+        if previous_response_id is not None:
+            request_options["previous_response_id"] = previous_response_id
+
         response = _responses_client.create(
             model=_model,
             instructions=SYSTEM_PROMPT,
@@ -72,7 +76,7 @@ def solve(user_input: str) -> str:
             tools=TOOL_DEFINITIONS,
             # First turn must be a tool call; later turns may return the final text.
             tool_choice="required" if round_number == 0 else "auto",
-            previous_response_id=previous_response_id,
+            **request_options,
         )
 
         if any(item.type not in ALLOWED_OUTPUT_TYPES for item in response.output):
