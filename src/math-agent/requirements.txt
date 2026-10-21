@@ -1,0 +1,7 @@
+azure-ai-agentserver-responses==2.1.0
+azure-ai-projects==2.0.1
+azure-identity==1.25.3
+httpx<1
+openai<3
+python-dotenv
+debugpy
