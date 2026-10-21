@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+name: math-agent
+services:
+    math-agent:
+        project: .
+        host: azure.ai.agent
+        language: python
+        uses:
+            - my-simple-agent
+        env:
+            AZURE_AI_MODEL_DEPLOYMENT_NAME: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
+        codeConfiguration:
+            dependencyResolution: remote_build
+            entryPoint: main.py
+            runtime: python_3_13
+        container:
+            resources:
+                cpu: "0.5"
+                memory: 1Gi
+        kind: hosted
+        name: math-agent
+        protocols:
+            - protocol: responses
+              version: 2.0.0
+    my-simple-agent:
+        host: azure.ai.project
+        endpoint: https://my-simple-agent-resource.services.ai.azure.com/api/projects/my-simple-agent
+infra:
+    provider: microsoft.foundry

@@ -71,11 +71,15 @@ az account set --subscription "$SUBSCRIPTION_ID"
 
 Get the project's ARM resource ID and endpoint:
 
+The project is a child resource of the Foundry account. Pass the account through `--parent` and only the project name through `--name`.
+
 ```bash
 export PROJECT_ID=$(az resource show \
   --resource-group "$RESOURCE_GROUP" \
-  --name "$FOUNDRY_ACCOUNT/$FOUNDRY_PROJECT" \
-  --resource-type "Microsoft.CognitiveServices/accounts/projects" \
+  --namespace "Microsoft.CognitiveServices" \
+  --parent "accounts/$FOUNDRY_ACCOUNT" \
+  --resource-type "projects" \
+  --name "$FOUNDRY_PROJECT" \
   --query id -o tsv)
 
 az resource show --ids "$PROJECT_ID" --query "properties.endpoints" -o json
@@ -172,12 +176,13 @@ azd ai agent init \
 
 Open `azure.yaml` and confirm the following:
 
+- `project` is relative to the folder containing `azure.yaml`, not necessarily the repository root. If init creates `src/math-agent/azure.yaml`, set `project: .` and add `-C src/math-agent` to every subsequent `azd` command run from the repository root (for example, `azd -C src/math-agent deploy`). Keep the existing `.azure/` environment alongside that manifest; don't rerun init.
 - There's exactly **one** agent service (`math-agent`). A `math-agent-2` entry means init ran twice.
 - `codeConfiguration.entryPoint` is `main.py` and `runtime` is `python_3_13`.
 - The agent's `env` section contains `AZURE_AI_MODEL_DEPLOYMENT_NAME: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}`. A literal `{{AZURE_AI_MODEL_DEPLOYMENT_NAME}}` means model resolution failed. In that case, replace it with `${AZURE_AI_MODEL_DEPLOYMENT_NAME}`.
 - Optionally, set `displayName: MathAgent` and a `description` such as *"Solves arithmetic using add/subtract/multiply/divide function tools; replies 'Sorry could not resolve your request' to anything else."*
 
-The result should look roughly like this:
+For an `azure.yaml` at the repository root, the result should look roughly like this (use `project: .` instead when the manifest is inside `src/math-agent/`):
 
 ```yaml
 services:
@@ -258,6 +263,8 @@ Press `Ctrl+C` in terminal 1 to stop the server.
 
 ## Step 9 – Deploy to Microsoft Foundry
 
+First run `azd package math-agent` (add `-C src/math-agent` if the manifest is in that folder). Inspect the reported ZIP using `unzip -l <package-path>`: it must contain `main.py`, `math_tools.py`, and `requirements.txt` at its root, and must not contain `.env`, `.azure/`, or `.venv/`. An empty archive means the service's `project` path is wrong.
+
 ```bash
 azd deploy
 ```
@@ -305,17 +312,66 @@ curl -sS -X POST "<agent responses endpoint from 'azd ai agent show'>" \
 
 ---
 
-## Step 11 – Update the agent
+## Step 11 – Update and redeploy the agent
 
-After you change `main.py` or `math_tools.py`, redeploy:
+For ordinary code changes, reuse the existing Foundry project, agent name, and azd environment. **Do not rerun `azd ai agent init`, `azd provision`, or the role assignments.** Each successful deployment creates a new immutable version of `math-agent`.
+
+The commands below run from the **repository root** and use the current layout: `src/math-agent/azure.yaml` with `project: .`. If your manifest is at the repository root instead, omit `-C src/math-agent`.
+
+### 1. Make and test your changes
+
+Edit `src/math-agent/main.py` (including agent instructions), `math_tools.py`, or `requirements.txt` as needed. If dependencies change, install them in the local virtual environment before testing.
+
+Start the local agent:
 
 ```bash
-azd deploy
-azd ai agent show --output json   # confirm the new version
-azd ai agent invoke "7 times 6"
+azd -C src/math-agent ai agent run --no-client
 ```
 
-To call a specific version: `azd ai agent invoke --version <n> "2+5"`.
+In another terminal at the repository root, test both arithmetic and the unsupported-request response:
+
+```bash
+azd -C src/math-agent ai agent invoke --local "7 times 6"
+azd -C src/math-agent ai agent invoke --local "what's the weather today?"
+```
+
+Expect `42` and `Sorry could not resolve your request`, respectively. Also test the behavior you changed. Stop the local server with `Ctrl+C` when finished.
+
+### 2. Redeploy
+
+```bash
+azd -C src/math-agent deploy math-agent
+```
+
+This packages the current source and dependencies, uploads them, and lets Foundry rebuild the runtime. No manual ZIP creation or Docker build is needed. Keep `project: .` in the nested manifest so the package contains the actual agent code.
+
+If your sign-in has expired, run `az login` and `azd auth login`, then retry. To target a non-default azd environment, add `--environment <env-name>` to the deploy command and use the same environment for verification and invocation.
+
+### 3. Verify the new version
+
+```bash
+azd -C src/math-agent ai agent show --output json
+azd -C src/math-agent ai agent invoke "7 times 6"
+azd -C src/math-agent ai agent invoke "what's the weather today?"
+```
+
+Confirm the deployment succeeded, the reported version is the new version, and its status is active/deployed. Check the reported endpoints and test your changed behavior remotely as well. Remote invocations are billed.
+
+To explicitly test a particular deployed version:
+
+```bash
+azd -C src/math-agent ai agent invoke --version <n> "2+5"
+```
+
+Clients pinned to an older version must be updated to use the new version or its reported endpoint; deploying does not change their explicit version selection.
+
+### Configuration changes
+
+- **Python dependencies:** update `requirements.txt` and redeploy; Foundry installs the updated dependencies during its remote build.
+- **Model deployment:** set `azd -C src/math-agent env set AZURE_AI_MODEL_DEPLOYMENT_NAME "<deployment-name>"`, then redeploy. The model deployment must already exist in the target project.
+- **Other runtime variables:** declare them in the agent service's `env` section in `azure.yaml`, supply any `${VARIABLE}` values through `azd -C src/math-agent env set VARIABLE "<value>"`, then redeploy.
+- **Local `.env`:** this file is excluded from the upload. Editing it alone does **not** update the hosted agent's configuration.
+- **Infrastructure or permissions:** changes to Azure resources or access may require separate provisioning or role assignments. They are not part of a normal code-only redeploy.
 
 ---
 
@@ -370,6 +426,7 @@ azd ai agent invoke "2+5"
 
 | Symptom | Fix |
 |---------|-----|
+| `Code part is not a valid ZIP file (invalid magic bytes)` | Check for an empty package with `azd package math-agent` and `unzip -l <package-path>`. The service's `project` must point at the source folder relative to `azure.yaml`: use `.` for `src/math-agent/azure.yaml`, or `src/math-agent` for a root-level manifest. Run azd from that manifest's folder or use `-C`. |
 | `404 DeploymentNotFound` on invoke | `AZURE_AI_MODEL_DEPLOYMENT_NAME` doesn't match a deployment. Re-run Step 4 and `azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME gpt-5.4-nano`. azd env values take priority over `.env`. |
 | `401/403` locally | Run `az login`, and check the **Azure AI User** role from Step 5. |
 | `--runtime must be one of ...` | Use the full token `python_3_13` (not `python`). |
